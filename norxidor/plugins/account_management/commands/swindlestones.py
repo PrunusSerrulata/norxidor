@@ -274,8 +274,8 @@ def end_round(state: T_State):
 
     return player_win
 
-def get_coin_emoji_list(coins: list[int]):
-    return "".join([(str(x).encode("utf-8")+b'\xef\xb8\x8f\xe2\x83\xa3').decode("utf-8") for x in coins])
+def get_dice_emoji_list(dices: list[int]):
+    return "".join([(str(x).encode("utf-8")+b'\xef\xb8\x8f\xe2\x83\xa3').decode("utf-8") for x in dices])
 
 
 parser = ArgumentParser(prog="SWINDLESTONES | SS | 猜骰子 | 昆特骰")
@@ -423,7 +423,7 @@ async def _(
     ][args.difficulty * 2 + int(bool(args.bet))]
 
     msg += f"\n{BAR_STRING}"
-    msg += f"\n🎲您手上的骰子为：{get_coin_emoji_list(state['swindlestones']['player_dices'])}"
+    msg += f"\n🎲您手上的骰子为：{get_dice_emoji_list(state['swindlestones']['player_dices'])}"
     msg += f"\n诺辛德手上现在有【{len(state['swindlestones']['ai_dices'])}枚】骰子。"
     msg += f"\n{BAR_STRING}"
     msg += "\n诺辛德投了一枚硬币，"
@@ -497,7 +497,7 @@ async def _(
         state["swindlestones"]["ai_last_guess"] = None
 
         if not game_end:
-            msg += f"\n🎲您现在手上的骰子为：{get_coin_emoji_list(state['swindlestones']['player_dices'])}"
+            msg += f"\n🎲您现在手上的骰子为：{get_dice_emoji_list(state['swindlestones']['player_dices'])}"
             msg += f"\n诺辛德手上现在有【{len(state['swindlestones']['ai_dices'])}枚】骰子。"
             if not state["swindlestones"]["ai_turn"]:
                 await matcher.reject(MessageSegment.at(event.user_id) + "\n" + msg)
@@ -575,7 +575,7 @@ async def _(
             )
         await call(matcher, event, state, session, True)
     elif cmd == "check":
-        msg = f"\n🎲您现在手上的骰子为：{get_coin_emoji_list(state['swindlestones']['player_dices'])}"
+        msg = f"\n🎲您现在手上的骰子为：{get_dice_emoji_list(state['swindlestones']['player_dices'])}"
         msg += (
             f"\n诺辛德手上现在有【{len(state['swindlestones']['ai_dices'])}枚】骰子。"
         )
