@@ -1,6 +1,6 @@
 # norxidor
 
-个人用bot
+个人用Bot
 
 ## How to start
 
