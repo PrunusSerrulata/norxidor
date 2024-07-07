@@ -575,7 +575,7 @@ async def _(
             )
         await call(matcher, event, state, session, True)
     elif cmd == "check":
-        msg = f"\n🎲您现在手上的骰子为：{get_dice_emoji_list(state['swindlestones']['player_dices'])}"
+        msg = f"\n🔍您现在手上的骰子为：{get_dice_emoji_list(state['swindlestones']['player_dices'])}"
         msg += (
             f"\n诺辛德手上现在有【{len(state['swindlestones']['ai_dices'])}枚】骰子。"
         )
