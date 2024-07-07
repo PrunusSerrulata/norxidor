@@ -1,5 +1,7 @@
 # norxidor
 
+个人用bot
+
 ## How to start
 
 1. generate project using `nb create` .
