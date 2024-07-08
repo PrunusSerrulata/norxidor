@@ -104,6 +104,30 @@ def dice_probability(k: int, kmin: int, kmax: int, n: int, f: int) -> float:
             1 - cdf_B(kmin - 1, n, p) - (1 - cdf_B(kmax, n, p))
         )
 
+def p_no_more_than_k_same(k: int, n: int, d: int) -> float:
+    """有d种不同的项目共n个，其中同种项目的个数不足k的概率"""
+    if k == 1:
+        return math.factorial(d) / (math.factorial(d-n)*d**n)
+    
+    res = 0
+    for i in range(1, math.floor(n/k)+1):
+        a = math.factorial(n)*math.factorial(d) / (d**(i*k)*math.factorial(i)*math.factorial(k)**i*math.factorial(n-i*k)*math.factorial(d-i))
+        s = 0
+        for j in range(1, k):
+            s += p_no_more_than_k_same(j, n-i*k, d-i)*(d-i)**(n-i*k)/d**(n-i*k)
+        res += a*s
+    return res
+
+def p_at_least_k_same(k: int, n: int, d: int) -> float:
+    """有d种不同的项目共n个，其中同种项目的个数至少为k的概率"""
+    if k > n:
+        raise ValueError("k must lower or equal to n")
+    
+    _temp = math.ceil(n/d)
+    if k <= _temp:
+        return 1
+    else:
+        return sum([p_no_more_than_k_same(i, n, d) for i in range(k, n+1)])
 
 def check_guess_valid(guess: tuple[int, int, bool], last_guess: tuple[int, int, bool]):
     valid = False
@@ -137,14 +161,14 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f):
                 opportunistic_limit += 1
         if opportunistic_limit > 0:
-            logger.debug(f"投机：猜测数目上限+{opportunistic_limit}")
+            logger.info(f"投机：猜测数目上限+{opportunistic_limit}")
 
         missing_faces = [
             x for x in range(1, f + 1) if x not in ai_dices
         ]  # ai手上缺失的骰子
         if len(missing_faces) > 0 and random.random() <= 0.5:
             chosen_face = random.choice(missing_faces)
-            logger.debug(
+            logger.info(
                 "欺诈性开局："
                 + ("随机" if len(missing_faces) > 1 else "")
                 + f"选择不存在的面值{chosen_face}"
@@ -160,7 +184,7 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
         for _n in range(len(strategy)):
             if rand > threshold and rand <= threshold + strategy[_n]:
                 chosen_count = _n + 1 + opportunistic_limit
-                logger.debug(
+                logger.info(
                     ("" if chosen_count <= selected_dice_count else "欺诈性")
                     + f"开局：选择策略{chosen_count}x{selected_dice}"
                 )
@@ -183,27 +207,30 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
         )
 
         if player_c > dice_count - len([x for x in ai_dices if x != player_n]):
-            logger.debug("玩家猜测的骰子数目超过了场上可能存在的最大数目")
+            logger.info("玩家猜测的骰子数目超过了场上可能存在的最大数目")
             return None
 
-        if (cdiff := player_c - ai_dices.count(player_n)) > 1:
-            if (cdf_B(cdiff - 1, len(player_dices), 1 / f) > 
-                pmf_B(cdiff, len(player_dices), 1 / f) + max((len(player_dices) - len(ai_dices)) * 0.1 / 4, 0)
-                and (len(player_dices) <= len(ai_dices) or random.random() <= 1 - (len(player_dices) - len(ai_dices)) * 0.7 / 4)) :
-                logger.debug("怀疑玩家欺诈")
+        if (cdiff := player_c - ai_dices.count(player_n)) > 0:
+            player_possible_dice_count = len(player_dices) - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != player_n])
+            if (player_possible_dice_count <= 0
+                or random.random() >= p_at_least_k_same(cdiff, player_possible_dice_count, f)
+                or (_r := random.random() <= 0.15 * cdiff)):
+                logger.info(f"{'随机' if '_r' in vars() else ''}怀疑玩家欺诈")
                 return None
             
-        guaranteed_player_dice_count = (
-            player_c - ai_last_c if player_n == ai_last_n else player_c - 1
-        )
-        if max(state["swindlestones"]["ai_memory"].values()) > 0 or player_n == ai_last_n:
+        if max(state["swindlestones"]["ai_memory"].values()) > 0 or player_n == ai_last_n: # 玩家后手
             opportunistic_limit = 0
             for i in range(1, len(player_dices)):
                 if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f):
                     opportunistic_limit += 1
             if opportunistic_limit > 0:
-                logger.debug(f"投机：猜测玩家所持骰数目+{opportunistic_limit}")
+                logger.info(f"投机：猜测玩家所持骰数目+{opportunistic_limit}")
+            guaranteed_player_dice_count = (
+                player_c - (ai_last_c if player_n == ai_last_n else 1)
+            )
             guaranteed_player_dice_count = int(guaranteed_player_dice_count / 2) + opportunistic_limit
+        else: # 玩家先手，或AI先手后玩家不跟面值
+            guaranteed_player_dice_count = int(player_c / 2 * max((5 - len(player_dices)) / 2, 1))
         
         if state["swindlestones"]["ai_memory"][player_n] < guaranteed_player_dice_count:
             state["swindlestones"]["ai_memory"][player_n] = guaranteed_player_dice_count
@@ -212,18 +239,17 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
 
         for _n in range(1, f + 1):  # 遍历所有面值
             all_probabilities: list[tuple[int, float]] = []
-            count_min = ai_dices.count(_n) + (
-                guaranteed_player_dice_count if _n == player_n else 0
-            )
+            count_min = ai_dices.count(_n) + state["swindlestones"]["ai_memory"][_n]
             count_max = (
                 dice_count
                 - len([x for x in ai_dices if x != _n])
                 - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != _n])
             )
-            if count_max < count_min:
-                logger.debug("玩家猜测思路过于投机")
+            if _n == player_n and count_max < count_min:
+                logger.info(f"玩家猜测思路过于投机")
                 return None
             
+            # count_max = max(count_max, count_min)
             if (
                 len(player_dices) < len(ai_dices)
                 and _n == player_n
@@ -231,15 +257,15 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
                 and count_max <= 2
                 and random.random() <= (1 - len(player_dices) / len(ai_dices)) / 2
             ):
-                logger.debug("情况对玩家很不利，进行诱导")
+                logger.info("情况对玩家很不利，进行诱导")
                 count_max += 1
             for _c in range(count_min, count_max + 1):  # 遍历可能的所有骰子数目
                 if (
                     _c == player_c
                     and _n == player_n
-                    and dice_probability(_c, count_min, count_max, dice_count, f) < 0.15
+                    and dice_probability(_c, count_min, count_max, dice_count, f) < 0.1
                 ):
-                    logger.debug("玩家当前猜测的骰子组合可能性过小")
+                    logger.info("玩家当前猜测的骰子组合可能性过小")
                     return None
                 if check_guess_valid(
                     (_c, _n, False), state["swindlestones"]["last_guess"]
@@ -254,24 +280,24 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
                 )  # 确保找到最大概率中骰子数量最大的
 
         if len(best_probabilities) == 0:
-            logger.debug("不存在合法的猜测")
+            logger.info("不存在合法的猜测")
             return None
 
         best_probability = max(best_probabilities.values(), key=lambda x: x[1])[1]
-        if best_probability < 0.15:
-            logger.debug("所有合法猜测的可能性均过小")
+        if best_probability < 0.1:
+            logger.info("所有合法猜测的可能性均过小")
             return None
 
         best_probabilities = {
             k: v for (k, v) in best_probabilities.items() if v[1] == best_probability and k > 0
         }
         if len(best_probabilities) == 0:
-            logger.debug("最佳猜测中所有可用的骰子面值对应的数目均为0")
+            logger.info("最佳猜测中所有可用的骰子面值对应的数目均为0")
             return None
         
         
         res = min(best_probabilities.keys())
-        logger.debug(
+        logger.info(
             f"面值最小的最佳猜测：{best_probabilities[res][0]}x{res} @ {best_probabilities[res][1]}"
         )
         return (best_probabilities[res][0], res, False)
@@ -395,7 +421,7 @@ async def _(
         await matcher.finish(
             MessageSegment.at(event.user_id)
             + f"\n“{nickname.nickname+'，' if nickname else ''}您可不能从我这里借钱当赌注啊！”"
-            + f"\n{BAR_STRING}n"
+            + f"\n{BAR_STRING}\n"
             + "⚠赌注必须非负且不大于10，想要无本买卖请不提供对应参数或提供0"
         )
     elif args.bet > account.coin:
@@ -407,7 +433,7 @@ async def _(
         await matcher.finish(
             MessageSegment.at(event.user_id)
             + f"\n“{nickname.nickname+'，' if nickname else ''}您出手真阔绰，恐怕我接不了……”"
-            + f"\n{BAR_STRING}n"
+            + f"\n{BAR_STRING}\n"
             + "⚠赌注必须非负且不大于10，想要无本买卖请不提供对应参数或提供0"
         )
 
