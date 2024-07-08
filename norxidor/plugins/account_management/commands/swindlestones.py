@@ -122,9 +122,7 @@ def p_at_least_k_same(k: int, n: int, d: int) -> float:
     """有d种不同的项目共n个，其中同种项目的个数至少为k的概率"""
     if k > n:
         raise ValueError("k must lower or equal to n")
-    
-    _temp = math.ceil(n/d)
-    if k <= _temp:
+    if k <= math.ceil(n/d):
         return 1
     else:
         return sum([p_no_more_than_k_same(i, n, d) for i in range(k, n+1)])
@@ -157,9 +155,10 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
 
         # 投机：增加猜测数目上限
         opportunistic_limit = 0
-        for i in range(1, len(player_dices)):
+        for i in range(len(player_dices)-1, 0, -1):
             if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f):
-                opportunistic_limit += 1
+                opportunistic_limit += i
+                break
         if opportunistic_limit > 0:
             logger.info(f"投机：猜测数目上限+{opportunistic_limit}")
 
@@ -220,9 +219,10 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             
         if max(state["swindlestones"]["ai_memory"].values()) > 0 or player_n == ai_last_n: # 玩家后手
             opportunistic_limit = 0
-            for i in range(1, len(player_dices)):
+            for i in range(len(player_dices)-1, 0, -1):
                 if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f):
-                    opportunistic_limit += 1
+                    opportunistic_limit += i
+                    break
             if opportunistic_limit > 0:
                 logger.info(f"投机：猜测玩家所持骰数目+{opportunistic_limit}")
             guaranteed_player_dice_count = (
