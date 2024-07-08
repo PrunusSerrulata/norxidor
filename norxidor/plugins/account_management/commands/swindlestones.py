@@ -66,11 +66,13 @@ class SwindlestonesStatistics(Model):
     game_count: Mapped[int] = mapped_column(default=0)
     bot_win_count: Mapped[int] = mapped_column(default=0)
 
+
 def pmf_B(k: int, n: int, p: float) -> float:
     """二项分布概率质量函数 `Pr(X = k; n, p)`"""
     if k > n or p < 0 or p > 1:
         raise ValueError
     return math.comb(n, k) * p**k * (1 - p) ** (n - k)
+
 
 def cdf_B(k: int, n: int, p: float) -> float:
     """二项分布累积分布函数 `Pr(X <= k; n, p)`"""
@@ -78,6 +80,7 @@ def cdf_B(k: int, n: int, p: float) -> float:
     for i in range(k + 1):
         res += pmf_B(i, n, p)
     return res
+
 
 def dice_probability(k: int, kmin: int, kmax: int, n: int, f: int) -> float:
     """在`n`个`f`面骰中，已知指定面值的骰子数目在`kmin`与`kmax`之间，求所有骰子中有至少`k`个相应面值骰子的概率`(kmin ≤ k ≤ kmax)`。
@@ -119,24 +122,32 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
 
     if not state["swindlestones"]["last_guess"]:  # 先手
         STRATEGY_TABLE = [
-            [7, 3],
-            [2, 7, 1],
-            [1, 6, 2, 1],
-            [1, 5, 2, 1, 1],
-            [0, 5, 2, 1, 1, 1],
+            [1],
+            [5, 5],
+            [1, 3, 6],
+            [1, 1, 2, 6],
+            [0, 1, 1, 2, 6],
         ]
+
+        # 投机：增加猜测数目上限
+        opportunistic_limit = 0
+        for i in range(1, len(player_dices)):
+            if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f):
+                opportunistic_limit += 1
+        if opportunistic_limit > 0:
+            logger.debug(f"投机：猜测数目上限+{opportunistic_limit}")
 
         missing_faces = [
             x for x in range(1, f + 1) if x not in ai_dices
         ]  # ai手上缺失的骰子
-        if len(missing_faces) > 0:
+        if len(missing_faces) > 0 and random.random() <= 0.5:
             chosen_face = random.choice(missing_faces)
             logger.debug(
                 "欺诈性开局："
                 + ("随机" if len(missing_faces) > 1 else "")
                 + f"选择不存在的面值{chosen_face}"
             )
-            return (2, chosen_face, False)
+            return (min(random.randint(1, 2), len(ai_dices) + opportunistic_limit), chosen_face, False)
 
         selected_dice = random.choice(statistics.multimode(ai_dices))
         selected_dice_count = ai_dices.count(selected_dice)
@@ -146,10 +157,10 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
         rand = random.randint(1, reduce(lambda x, y: x + y, strategy))
         for _n in range(len(strategy)):
             if rand > threshold and rand <= threshold + strategy[_n]:
-                chosen_count = _n + 1
+                chosen_count = _n + 1 + opportunistic_limit
                 logger.debug(
                     ("" if chosen_count <= selected_dice_count else "欺诈性")
-                    + f"开局：选择策略{_n+1}x{selected_dice}"
+                    + f"开局：选择策略{chosen_count}x{selected_dice}"
                 )
                 break
             else:
@@ -173,14 +184,26 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             logger.debug("玩家猜测的骰子数目超过了场上可能存在的最大数目")
             return None
 
-        if (cdiff := player_c - ai_dices.count(player_n)) > 0:
-            if cdf_B(cdiff-1, len(player_dices), 1/f) > pmf_B(cdiff, len(player_dices), 1/f):
+        if (cdiff := player_c - ai_dices.count(player_n)) > 1:
+            if (cdf_B(cdiff - 1, len(player_dices), 1 / f) > pmf_B(cdiff, len(player_dices), 1 / f) + (1 - (len(player_dices) - len(ai_dices)) * 0.1 / 4)
+                and (len(player_dices) <= len(ai_dices) or random.random() <= 1 - (len(player_dices) - len(ai_dices)) * 0.7 / 4)) :
                 logger.debug("怀疑玩家欺诈")
                 return None
-
+            
         guaranteed_player_dice_count = (
             player_c - ai_last_c if player_n == ai_last_n else player_c - 1
         )
+        if max(state["swindlestones"]["ai_memory"].values()) > 0 or player_n == ai_last_n:
+            opportunistic_limit = 0
+            for i in range(1, len(player_dices)):
+                if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f):
+                    opportunistic_limit += 1
+            if opportunistic_limit > 0:
+                logger.debug(f"投机：猜测玩家所持骰数目+{opportunistic_limit}")
+            guaranteed_player_dice_count = int(guaranteed_player_dice_count / 2) + opportunistic_limit
+        
+        if state["swindlestones"]["ai_memory"][player_n] < guaranteed_player_dice_count:
+            state["swindlestones"]["ai_memory"][player_n] = guaranteed_player_dice_count
 
         best_probabilities: dict[int, tuple[int, float]] = {}  # { 面值: (个数, 概率) }
 
@@ -189,11 +212,11 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             count_min = ai_dices.count(_n) + (
                 guaranteed_player_dice_count if _n == player_n else 0
             )
-            count_max = (
+            count_max = max((
                 dice_count
                 - len([x for x in ai_dices if x != _n])
-                - (guaranteed_player_dice_count if _n != player_n else 0)
-            )
+                - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != _n])
+            ), count_min)
             if (
                 len(player_dices) < len(ai_dices)
                 and _n == player_n
@@ -203,11 +226,11 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             ):
                 logger.debug("情况对玩家很不利，进行诱导")
                 count_max += 1
-            for _c in range(max(count_min, 1), count_max + 1):  # 遍历可能的所有骰子数目
+            for _c in range(count_min, count_max + 1):  # 遍历可能的所有骰子数目
                 if (
                     _c == player_c
                     and _n == player_n
-                    and dice_probability(_c, count_min, count_max, dice_count, f) < 0.05
+                    and dice_probability(_c, count_min, count_max, dice_count, f) < 0.15
                 ):
                     logger.debug("玩家当前猜测的骰子组合可能性过小")
                     return None
@@ -228,14 +251,18 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             return None
 
         best_probability = max(best_probabilities.values(), key=lambda x: x[1])[1]
-        if best_probability < 0.05:
+        if best_probability < 0.15:
             logger.debug("所有合法猜测的可能性均过小")
             return None
 
         best_probabilities = {
-            k: v for (k, v) in best_probabilities.items() if v[1] == best_probability
+            k: v for (k, v) in best_probabilities.items() if v[1] == best_probability and k > 0
         }
-
+        if len(best_probabilities) == 0:
+            logger.debug("最佳猜测中所有可用的骰子面值对应的数目均为0")
+            return None
+        
+        
         res = min(best_probabilities.keys())
         logger.debug(
             f"面值最小的最佳猜测：{best_probabilities[res][0]}x{res} @ {best_probabilities[res][1]}"
@@ -274,8 +301,14 @@ def end_round(state: T_State):
 
     return player_win
 
+
 def get_dice_emoji_list(dices: list[int]):
-    return "".join([(str(x).encode("utf-8")+b'\xef\xb8\x8f\xe2\x83\xa3').decode("utf-8") for x in dices])
+    return "".join(
+        [
+            (str(x).encode("utf-8") + b"\xef\xb8\x8f\xe2\x83\xa3").decode("utf-8")
+            for x in dices
+        ]
+    )
 
 
 parser = ArgumentParser(prog="SWINDLESTONES | SS | 猜骰子 | 昆特骰")
@@ -406,6 +439,7 @@ async def _(
         "ai_dices": sorted([random.randint(1, f) for i in range(n)]),
         "last_guess": None,
         "ai_last_guess": None,
+        "ai_memory": {i: 0 for i in range(1, f+1)},
         "ai_turn": False,
     }
 
@@ -495,6 +529,7 @@ async def _(
                 game_end = True
         state["swindlestones"]["last_guess"] = None
         state["swindlestones"]["ai_last_guess"] = None
+        state["swindlestones"]["ai_memory"] = {i: 0 for i in range(1, state["swindlestones"]["dice_face"]+1)}
 
         if not game_end:
             msg += f"\n🎲您现在手上的骰子为：{get_dice_emoji_list(state['swindlestones']['player_dices'])}"
