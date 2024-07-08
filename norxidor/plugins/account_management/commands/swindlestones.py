@@ -24,6 +24,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 AI_VERSION = 2
 
+MULTIPLIERS = [4, 6]
+
 BAR_STRING = nonebot.get_driver().config.bar_string
 
 COMMAND_TIP = """\
@@ -44,9 +46,9 @@ RULE_TEXT = f"""\
 
 🏁【结束】：当一方无骰可抓时，游戏结束，另一方赢得游戏。"""
 
-ARGS_HELP_TEXT = """\
+ARGS_HELP_TEXT = f"""\
 🔧【自定义】：SWINDLESTONES [赌注] [难度] [骰子预设]
-赌注：默认为0，最高为10。普通难度倍率为2.5，困难为4，向下取整（因此建议赌注为偶数）
+赌注：默认为0，最高为10。普通难度倍率为{MULTIPLIERS[0]}，困难为{MULTIPLIERS[1]}，向下取整
 难度：0普通/1困难（目前暂未开放困难难度）
 骰子预设：NdF，代表开局双方各有N枚F面骰"""
 
@@ -185,7 +187,8 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             return None
 
         if (cdiff := player_c - ai_dices.count(player_n)) > 1:
-            if (cdf_B(cdiff - 1, len(player_dices), 1 / f) > pmf_B(cdiff, len(player_dices), 1 / f) + (1 - (len(player_dices) - len(ai_dices)) * 0.1 / 4)
+            if (cdf_B(cdiff - 1, len(player_dices), 1 / f) > 
+                pmf_B(cdiff, len(player_dices), 1 / f) + max((len(player_dices) - len(ai_dices)) * 0.1 / 4, 0)
                 and (len(player_dices) <= len(ai_dices) or random.random() <= 1 - (len(player_dices) - len(ai_dices)) * 0.7 / 4)) :
                 logger.debug("怀疑玩家欺诈")
                 return None
@@ -212,11 +215,15 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             count_min = ai_dices.count(_n) + (
                 guaranteed_player_dice_count if _n == player_n else 0
             )
-            count_max = max((
+            count_max = (
                 dice_count
                 - len([x for x in ai_dices if x != _n])
                 - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != _n])
-            ), count_min)
+            )
+            if count_max < count_min:
+                logger.debug("玩家猜测思路过于投机")
+                return None
+            
             if (
                 len(player_dices) < len(ai_dices)
                 and _n == player_n
@@ -555,8 +562,7 @@ async def _(
                 assert account
                 coin_get = max(
                     int(
-                        state["swindlestones"]["bet"]
-                        * (2.5 if state["swindlestones"]["difficulty"] == 0 else 4)
+                        state["swindlestones"]["bet"] * (MULTIPLIERS[state["swindlestones"]["difficulty"]])
                     ),
                     1,
                 )
