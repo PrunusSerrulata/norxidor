@@ -30,12 +30,17 @@ async def _(
     if prefix != "!":
         await matcher.finish()
     account, nickname = await account_management.utils.find_account(event.user_id, event.group_id, session)
+    if not account:
+        await matcher.finish(
+            "尊敬的" + MessageSegment.at(event.user_id) + "，您尚未注册账户，请先注册！（使用命令【/(register|注册) [昵称 】注册，昵称为可选项，使用时需at本机器人）"
+        )
+    
     state["character"] = await session.get(Character, event.get_session_id())
     if not state["character"]:
         await matcher.finish(
             ("亲爱" if account else "尊敬") + f"的{(nickname.nickname+' ') if nickname else ''}"
             + MessageSegment.at(event.user_id)
-            + "，您尚未创建角色！"
+            + "，您尚未创建角色！（使用命令【/(ccreate|创建角色)】创建角色）"
         )
     else:
         logger.debug("Classes: "+", ".join([x.name for x in state["character"].classes]))

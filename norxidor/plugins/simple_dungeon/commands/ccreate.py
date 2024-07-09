@@ -38,7 +38,7 @@ async def _(
     )
     if not account:
         await matcher.finish(
-            "尊敬的" + MessageSegment.at(event.user_id) + "，您尚未注册账户，请先注册！"
+            "尊敬的" + MessageSegment.at(event.user_id) + "，您尚未注册账户，请先注册！（使用命令【/(register|注册) [昵称]】注册，昵称为可选项，使用时需at本机器人）"
         )
 
     if await session.get(Character, event.get_session_id()):

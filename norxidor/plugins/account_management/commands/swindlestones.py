@@ -22,9 +22,10 @@ from nonebot_plugin_orm import Model, async_scoped_session
 from sqlalchemy import select
 from sqlalchemy.orm import Mapped, mapped_column
 
-AI_VERSION = 2
+AI_VERSION = 3
 
-MULTIPLIERS = [4, 6]
+HARD_MODE_DICE_PRESET = (3, 5)
+MULTIPLIERS = (4, 6)
 
 BAR_STRING = nonebot.get_driver().config.bar_string
 
@@ -49,7 +50,7 @@ RULE_TEXT = f"""\
 ARGS_HELP_TEXT = f"""\
 🔧【自定义】：SWINDLESTONES [赌注] [难度] [骰子预设]
 赌注：默认为0，最高为10。普通难度倍率为{MULTIPLIERS[0]}，困难为{MULTIPLIERS[1]}，向下取整
-难度：0普通/1困难（目前暂未开放困难难度）
+难度：0普通/1困难（玩家起手只有3枚4面骰，AI有5枚）
 骰子预设：NdF，代表开局双方各有N枚F面骰"""
 
 FULL_HELP_TEXT = (
@@ -65,8 +66,10 @@ INGAME_HELP_TEXT = RULE_TEXT + f"\n{BAR_STRING}\n局内命令：\n" + COMMAND_TI
 
 class SwindlestonesStatistics(Model):
     version: Mapped[int] = mapped_column(primary_key=True, default=AI_VERSION)
-    game_count: Mapped[int] = mapped_column(default=0)
-    bot_win_count: Mapped[int] = mapped_column(default=0)
+    regular_game_count: Mapped[int] = mapped_column(default=0)
+    regular_bot_win_count: Mapped[int] = mapped_column(default=0)
+    hardmode_game_count: Mapped[int] = mapped_column(default=0)
+    hardmode_bot_win_count: Mapped[int] = mapped_column(default=0)
 
 
 def pmf_B(k: int, n: int, p: float) -> float:
@@ -85,7 +88,9 @@ def cdf_B(k: int, n: int, p: float) -> float:
 
 
 def dice_probability(k: int, kmin: int, kmax: int, n: int, f: int) -> float:
-    """在`n`个`f`面骰中，已知指定面值的骰子数目在`kmin`与`kmax`之间，求所有骰子中有至少`k`个相应面值骰子的概率`(kmin ≤ k ≤ kmax)`。
+    """在`n`个`f`面骰中，已知指定面值的骰子数目在`kmin`与`kmax`之间，求所有骰子中有至少`k`个相应面值骰子的概率
+    
+    `Pr(X >= k | kmin ≤ X ≤ kmax) (kmin ≤ k ≤ kmax)`。
 
     Args:
         `k` (int): 目标值
@@ -94,12 +99,15 @@ def dice_probability(k: int, kmin: int, kmax: int, n: int, f: int) -> float:
         `n` (int): 骰子总数
         `f` (int): 骰子面数
     """
-    p = 1 / f
+    if kmin > kmax:
+        raise ValueError
+    
     if k <= kmin:
         return 1
     elif k > kmax:
         return 0
     else:
+        p = 1 / f
         return ((1 - cdf_B(k - 1, n, p)) - (1 - cdf_B(kmax, n, p))) / (
             1 - cdf_B(kmin - 1, n, p) - (1 - cdf_B(kmax, n, p))
         )
@@ -218,17 +226,10 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
                 return None
             
         if max(state["swindlestones"]["ai_memory"].values()) > 0 or player_n == ai_last_n: # 玩家后手
-            opportunistic_limit = 0
-            for i in range(len(player_dices)-1, 0, -1):
-                if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f):
-                    opportunistic_limit += i
-                    break
-            if opportunistic_limit > 0:
-                logger.info(f"投机：猜测玩家所持骰数目+{opportunistic_limit}")
             guaranteed_player_dice_count = (
                 player_c - (ai_last_c if player_n == ai_last_n else 1)
             )
-            guaranteed_player_dice_count = int(guaranteed_player_dice_count / 2) + opportunistic_limit
+            guaranteed_player_dice_count = int(guaranteed_player_dice_count / 2)
         else: # 玩家先手，或AI先手后玩家不跟面值
             guaranteed_player_dice_count = int(player_c / 2 * max((5 - len(player_dices)) / 2, 1))
         
@@ -245,20 +246,31 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
                 - len([x for x in ai_dices if x != _n])
                 - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != _n])
             )
+            
             if _n == player_n and count_max < count_min:
                 logger.info(f"玩家猜测思路过于投机")
                 return None
             
             # count_max = max(count_max, count_min)
-            if (
-                len(player_dices) < len(ai_dices)
-                and _n == player_n
-                and player_c == 1
-                and count_max <= 2
-                and random.random() <= (1 - len(player_dices) / len(ai_dices)) / 2
-            ):
-                logger.info("情况对玩家很不利，进行诱导")
-                count_max += 1
+            # if (
+            #     len(player_dices) < len(ai_dices)
+            #     and _n == player_n
+            #     and player_c == 1
+            #     and count_max <= 2
+            #     and random.random() <= (1 - len(player_dices) / len(ai_dices)) / 2
+            # ):
+            #     logger.info("情况对玩家很不利，进行诱导")
+            #     count_max += 1
+            
+            opportunistic_limit = 0
+            for i in range(int(len(player_dices)/2), 0, -1):
+                if random.random() <= (_p := dice_probability(i, 0, len(player_dices), len(player_dices), f) / 3):
+                    opportunistic_limit += i
+                    break
+            if opportunistic_limit > 0:
+                count_min = min(count_min + opportunistic_limit, count_max)
+                logger.info(f"投机：猜测玩家所持面值为 {_n} 骰子的数目+{opportunistic_limit} ({_p})")
+                
             for _c in range(count_min, count_max + 1):  # 遍历可能的所有骰子数目
                 if (
                     _c == player_c
@@ -350,19 +362,19 @@ parser.add_argument(
     "bet", type=int, nargs="?", default=0, help="赌注（最大为10），默认为0即无赌注"
 )
 parser.add_argument(
-    "difficulty",
+    "hardmode",
     type=int,
     nargs="?",
-    choices=(0,),
+    choices=(0, 1),
     default=0,
-    help="难度设置，0为一般（默认），1为困难（暂未开放！）",
+    help="难度设置，0为一般（默认），1为困难",
 )
 parser.add_argument(
     "dice_notation",
     type=str,
     nargs="?",
     default="5d4",
-    help="以NdF(1≤N≤5, 2≤F≤8)表示的骰子配置，默认为5d4",
+    help="以NdF(1≤N≤5, 2≤F≤8)表示的骰子配置，默认为5d4。困难模式此项会被无视",
 )
 
 matcher = on_shell_command(
@@ -414,7 +426,7 @@ async def _(
     )
     if not account:
         await matcher.finish(
-            "尊敬的" + MessageSegment.at(event.user_id) + "，您尚未注册账户，请先注册！"
+            "尊敬的" + MessageSegment.at(event.user_id) + "，您尚未注册账户，请先注册！（使用命令【/(register|注册) [昵称]】注册，昵称为可选项，使用时需at本机器人）"
         )
 
     if args.bet < 0:
@@ -437,7 +449,9 @@ async def _(
             + "⚠赌注必须非负且不大于10，想要无本买卖请不提供对应参数或提供0"
         )
 
-    if not re.match(r"^\d+[dD]\d+$", args.dice_notation):
+    if args.hardmode:
+        f = 4
+    elif not re.match(r"^\d+[dD]\d+$", args.dice_notation):
         await matcher.finish(
             MessageSegment.at(event.user_id) + " 请提供正确的骰子配置！"
         )
@@ -465,43 +479,51 @@ async def _(
     state["swindlestones"] = {
         "account": account,
         "nickname": nickname,
-        "difficulty": args.difficulty,
+        "hardmode": args.hardmode,
         "bet": args.bet,
         "dice_face": f,
-        "player_dices": sorted([random.randint(1, f) for i in range(n)]),
-        "ai_dices": sorted([random.randint(1, f) for i in range(n)]),
+        "player_dices": sorted([random.randint(1, f) for i in range(n if not args.hardmode else HARD_MODE_DICE_PRESET[0])]),
+        "ai_dices": sorted([random.randint(1, f) for i in range(n if not args.hardmode else HARD_MODE_DICE_PRESET[1])]),
         "last_guess": None,
         "ai_last_guess": None,
         "ai_memory": {i: 0 for i in range(1, f+1)},
         "ai_turn": False,
     }
 
-    msg = (
+    msg = "⚠你选择了困难模式⚠\n" if args.hardmode else ""
+    msg += (
         f"你排出了{args.bet}枚{config.coin_notation}放在桌面上当作赌注。"
         if args.bet > 0
         else ""
     )
-    msg += f"诺辛德掏出了【{n}枚{f}面】的骰子，放在了你的手心里。"
+    msg += f"诺辛德掏出了【{n}枚】【{f}面】的骰子，放在了你的手心里。" if not args.hardmode else f"诺辛德给自己抓了【{HARD_MODE_DICE_PRESET[1]}枚{f}面】的骰子，但只给你抓了【{HARD_MODE_DICE_PRESET[0]}枚】。"
     msg += [
         "“小赌怡情，大赌伤身，就这么玩玩也挺好。”",
         "“放心放心，我会给您留面子的，”他收下了您的赌注。",
         "“输了也别灰心，反正您也不会真的损失什么……”",
         "“我很期待最后谁会赢，您呢？”他收下了你的赌注。",
-    ][args.difficulty * 2 + int(bool(args.bet))]
+    ][args.hardmode * 2 + int(bool(args.bet))]
 
     msg += f"\n{BAR_STRING}"
     msg += f"\n🎲您手上的骰子为：{get_dice_emoji_list(state['swindlestones']['player_dices'])}"
     msg += f"\n诺辛德手上现在有【{len(state['swindlestones']['ai_dices'])}枚】骰子。"
     msg += f"\n{BAR_STRING}"
-    msg += "\n诺辛德投了一枚硬币，"
-    if random.random() <= 0.5:
-        msg += "反面朝上，他先手。"
+    
+    if not args.hardmode:
+        msg += "\n诺辛德投了一枚硬币，"
+        if random.random() <= 0.5:
+            msg += "反面朝上，他先手。"
+            state["swindlestones"]["ai_turn"] = True
+            matcher.set_arg("cmd", Message())
+        else:
+            state["swindlestones"]["ai_turn"] = False
+            msg += "正面朝上，您先手。"
+            msg += "\n" + COMMAND_TIP
+    else:
+        msg += "\n他说：“既然选择困难，就要贯彻到底……”"
+        msg += "【困难模式下固定诺辛德先手。】"
         state["swindlestones"]["ai_turn"] = True
         matcher.set_arg("cmd", Message())
-    else:
-        state["swindlestones"]["ai_turn"] = False
-        msg += "正面朝上，您先手。"
-        msg += "\n" + COMMAND_TIP
 
     await matcher.send(MessageSegment.at(event.user_id) + "\n" + msg)
 
@@ -578,7 +600,10 @@ async def _(
                 )
             )
             assert stat
-            stat.game_count += 1
+            if state["swindlestones"]["hardmode"]:
+                stat.hardmode_game_count += 1
+            else:
+                stat.regular_game_count += 1
             if player_win:
                 account, _ = await utils.find_account(
                     event.user_id,
@@ -588,11 +613,12 @@ async def _(
                 assert account
                 coin_get = max(
                     int(
-                        state["swindlestones"]["bet"] * (MULTIPLIERS[state["swindlestones"]["difficulty"]])
+                        state["swindlestones"]["bet"] * (MULTIPLIERS[state["swindlestones"]["hardmode"]])
                     ),
                     1,
                 )
-                msg += f"\n您获得了{coin_get}枚{config.coin_notation}"
+                _reward_exp = f"{state['swindlestones']['bet']}*{MULTIPLIERS[state['swindlestones']['hardmode']]}=" if state['swindlestones']['bet'] else ""
+                msg += f"\n您获得了{_reward_exp}{coin_get}枚{config.coin_notation}"
                 account.coin += coin_get
                 try:
                     await session.flush([account, stat])
@@ -604,7 +630,10 @@ async def _(
                     logger.opt(exception=e).error(type(e).__name__)
                     await matcher.finish("数据操作失败")
             else:
-                stat.bot_win_count += 1
+                if state["swindlestones"]["hardmode"]:
+                    stat.hardmode_bot_win_count += 1
+                else:
+                    stat.regular_bot_win_count += 1
                 try:
                     await session.flush([stat])
                     await session.commit()

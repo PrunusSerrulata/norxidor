@@ -42,4 +42,4 @@ async def _(
             logger.opt(exception=e).error(type(e).__name__)
             await matcher.finish("昵称修改失败")
     else:
-        await matcher.finish("尊敬的"+MessageSegment.at(event.user_id)+"，您尚未注册账户，请先注册！")
+        await matcher.finish("尊敬的"+MessageSegment.at(event.user_id)+"，您尚未注册账户，请先注册！（使用命令【/(register|注册) [昵称]】注册，昵称为可选项，使用时需at本机器人）")
