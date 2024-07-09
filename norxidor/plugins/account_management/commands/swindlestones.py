@@ -231,7 +231,7 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             )
             guaranteed_player_dice_count = int(guaranteed_player_dice_count / 2)
         else: # 玩家先手，或AI先手后玩家不跟面值
-            guaranteed_player_dice_count = int(player_c / 2 * max((5 - len(player_dices)) / 2, 1))
+            guaranteed_player_dice_count = int(player_c / 2)
         
         if state["swindlestones"]["ai_memory"][player_n] < guaranteed_player_dice_count:
             state["swindlestones"]["ai_memory"][player_n] = guaranteed_player_dice_count
@@ -247,9 +247,9 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
                 - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != _n])
             )
             
-            if _n == player_n and count_max < count_min:
-                logger.info(f"玩家猜测思路过于投机")
-                return None
+            # if _n == player_n and count_max < count_min:
+            #     logger.info(f"玩家猜测思路过于投机")
+            #     return None
             
             # count_max = max(count_max, count_min)
             # if (
