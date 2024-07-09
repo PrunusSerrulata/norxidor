@@ -221,7 +221,7 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             player_possible_dice_count = len(player_dices) - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != player_n])
             if (player_possible_dice_count <= 0
                 or random.random() >= p_at_least_k_same(cdiff, player_possible_dice_count, f)
-                or (_r := random.random() <= 0.15 * cdiff)):
+                or (_r := random.random() <= 0.1 * cdiff)):
                 logger.info(f"{'随机' if '_r' in vars() else ''}怀疑玩家欺诈")
                 return None
             
@@ -236,41 +236,28 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
         if state["swindlestones"]["ai_memory"][player_n] < guaranteed_player_dice_count:
             state["swindlestones"]["ai_memory"][player_n] = guaranteed_player_dice_count
 
+        modified_memory = state["swindlestones"]["ai_memory"].copy()
+        for i in random.sample(range(1, f+1), f):
+            opportunistic_limit = 0
+            avaliable_dice_count = len(player_dices) - sum([v for v in modified_memory.values()])
+            for j in range(int(len(player_dices)/2), 0, -1):
+                if random.random() <= (_p := dice_probability(j, 0, avaliable_dice_count, len(player_dices), f) / 3):
+                    opportunistic_limit += j
+                    break
+            if opportunistic_limit > 0:
+                modified_memory[i] += opportunistic_limit
+                logger.info(f"投机：猜测玩家所持面值为 {i} 骰子的数目+{opportunistic_limit} ({_p})")
+        
         best_probabilities: dict[int, tuple[int, float]] = {}  # { 面值: (个数, 概率) }
-
         for _n in range(1, f + 1):  # 遍历所有面值
             all_probabilities: list[tuple[int, float]] = []
-            count_min = ai_dices.count(_n) + state["swindlestones"]["ai_memory"][_n]
+            count_min = ai_dices.count(_n) + modified_memory[_n]
             count_max = (
                 dice_count
                 - len([x for x in ai_dices if x != _n])
-                - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != _n])
+                - sum([v for k, v in modified_memory.items() if k != _n])
             )
-            
-            # if _n == player_n and count_max < count_min:
-            #     logger.info(f"玩家猜测思路过于投机")
-            #     return None
-            
-            # count_max = max(count_max, count_min)
-            # if (
-            #     len(player_dices) < len(ai_dices)
-            #     and _n == player_n
-            #     and player_c == 1
-            #     and count_max <= 2
-            #     and random.random() <= (1 - len(player_dices) / len(ai_dices)) / 2
-            # ):
-            #     logger.info("情况对玩家很不利，进行诱导")
-            #     count_max += 1
-            
-            opportunistic_limit = 0
-            for i in range(int(len(player_dices)/2), 0, -1):
-                if random.random() <= (_p := dice_probability(i, 0, len(player_dices), len(player_dices), f) / 3):
-                    opportunistic_limit += i
-                    break
-            if opportunistic_limit > 0:
-                count_min = min(count_min + opportunistic_limit, count_max)
-                logger.info(f"投机：猜测玩家所持面值为 {_n} 骰子的数目+{opportunistic_limit} ({_p})")
-                
+
             for _c in range(count_min, count_max + 1):  # 遍历可能的所有骰子数目
                 if (
                     _c == player_c
@@ -490,9 +477,9 @@ async def _(
         "ai_turn": False,
     }
 
-    msg = "⚠你选择了困难模式⚠\n" if args.hardmode else ""
+    msg = "⚠您选择了困难模式⚠\n" if args.hardmode else ""
     msg += (
-        f"你排出了{args.bet}枚{config.coin_notation}放在桌面上当作赌注。"
+        f"你排出{args.bet}枚{config.coin_notation}放在桌面上当作赌注。"
         if args.bet > 0
         else ""
     )
