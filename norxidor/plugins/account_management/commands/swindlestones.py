@@ -24,13 +24,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 AI_VERSION = 3
 
+MAX_DICE_COUNT = 10
+MAX_PLAYER_DICE_COUNT = MAX_DICE_COUNT / 2
 HARD_MODE_DICE_PRESET = (3, 5)
-MULTIPLIERS = (4, 6)
+MULTIPLIERS = (1.6, 3.5)
 
 BAR_STRING = nonebot.get_driver().config.bar_string
 
 COMMAND_TIP = """\
-💡【CxN】：进行猜测（C为个数，N为骰子面值）
+💡【CxN|C N】：进行猜测（C为个数，N为骰子面值）
 🔨【call】：揭穿对手并结算本轮
 🔍【check】：查看当前状态
 ℹ【help】：查看规则与帮助
@@ -40,7 +42,7 @@ RULE_TEXT = f"""\
 游戏开始时，玩家手中各有数枚骰子，您的目标是猜中场上所有骰子存在某种分布，或是揭穿对方的虚假猜测，直至某一方骰数为0为止。
 {BAR_STRING}
 💡【猜测】：玩家可以猜测当前场上至少存在【C枚】面值为【N】的骰子，其中C必须大于等于上次猜测中的C，且若相等则N必须较上次的为大。
-例：场上共有8枚4面骰，若上家猜测3x2，则本回合您只能猜测(4~8)x(2~4)，或(3)x(3~4)。
+例：场上共有8枚4面骰，若上家猜测3x2，则本回合您只能猜测(4~8)x(1~4)，或(3)x(3~4)。
 
 🔨【揭穿】：玩家可以在对手做出猜测后予以揭穿，此举将会展示双方手中的骰子，并判断对手的猜测是否正确。若猜测正确，则揭穿者输掉本轮，否则上家输掉本轮。
 无论结果如何，双方都重新抓骰，输家将少抓一个骰子。
@@ -49,8 +51,8 @@ RULE_TEXT = f"""\
 
 ARGS_HELP_TEXT = f"""\
 🔧【自定义】：SWINDLESTONES [赌注] [难度] [骰子预设]
-赌注：默认为0，最高为10。普通难度倍率为{MULTIPLIERS[0]}，困难为{MULTIPLIERS[1]}，向下取整
-难度：0普通/1困难（玩家起手只有3枚4面骰，AI有5枚）
+赌注：默认为0，最高为10。普通难度倍率为{MULTIPLIERS[0]}，奇进偶舍
+难度：默认0普通（困难模式暂未开放）
 骰子预设：NdF，代表开局双方各有N枚F面骰"""
 
 FULL_HELP_TEXT = (
@@ -127,7 +129,7 @@ def p_no_more_than_k_same(k: int, n: int, d: int) -> float:
     return res
 
 def p_at_least_k_same(k: int, n: int, d: int) -> float:
-    """有d种不同的项目共n个，其中同种项目的个数至少为k的概率"""
+    """有d种不同项目的物体共n个，其中同种项目的个数至少为k的概率"""
     if k > n:
         raise ValueError("k must lower or equal to n")
     if k <= math.ceil(n/d):
@@ -164,30 +166,31 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
         # 投机：增加猜测数目上限
         opportunistic_limit = 0
         for i in range(len(player_dices)-1, 0, -1):
-            if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f):
+            if random.random() <= dice_probability(i, 0, len(player_dices), len(player_dices), f) / 3:
                 opportunistic_limit += i
                 break
         if opportunistic_limit > 0:
             logger.info(f"投机：猜测数目上限+{opportunistic_limit}")
 
+        selected_dice = random.choice(statistics.multimode(ai_dices))
+        selected_dice_count = ai_dices.count(selected_dice)
+        
         missing_faces = [
             x for x in range(1, f + 1) if x not in ai_dices
         ]  # ai手上缺失的骰子
-        if len(missing_faces) > 0 and random.random() <= 0.5:
+        if len(missing_faces) > 0 and random.random() > 1 - p_at_least_k_same(selected_dice_count, len(ai_dices), f) / 2:
             chosen_face = random.choice(missing_faces)
             logger.info(
                 "欺诈性开局："
                 + ("随机" if len(missing_faces) > 1 else "")
                 + f"选择不存在的面值{chosen_face}"
             )
-            return (min(random.randint(1, 2), len(ai_dices) + opportunistic_limit), chosen_face, False)
+            return (min(random.sample([1, 2], k=1, counts=[3, 1])[0], len(ai_dices) + opportunistic_limit), chosen_face, False)
 
-        selected_dice = random.choice(statistics.multimode(ai_dices))
-        selected_dice_count = ai_dices.count(selected_dice)
         strategy = STRATEGY_TABLE[selected_dice_count - 1]
 
         chosen_count, threshold = 0, 0
-        rand = random.randint(1, reduce(lambda x, y: x + y, strategy))
+        rand = random.randint(1, sum(strategy))
         for _n in range(len(strategy)):
             if rand > threshold and rand <= threshold + strategy[_n]:
                 chosen_count = _n + 1 + opportunistic_limit
@@ -219,23 +222,23 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
 
         if (cdiff := player_c - ai_dices.count(player_n)) > 0:
             player_possible_dice_count = len(player_dices) - sum([v for k, v in state["swindlestones"]["ai_memory"].items() if k != player_n])
-            if (player_possible_dice_count <= 0
-                or random.random() >= p_at_least_k_same(cdiff, player_possible_dice_count, f)
-                or (_r := random.random() <= 0.1 * cdiff)):
+            if (player_possible_dice_count < cdiff
+                or random.random() >= p_at_least_k_same(cdiff, player_possible_dice_count, f) / ((len(player_dices) / MAX_PLAYER_DICE_COUNT / 2 + 0.5) if ai_last_n != 0 else 1)
+                or (_r := random.random() <= 0.05 * cdiff)):
                 logger.info(f"{'随机' if '_r' in vars() else ''}怀疑玩家欺诈")
                 return None
             
         if max(state["swindlestones"]["ai_memory"].values()) > 0 or player_n == ai_last_n: # 玩家后手
-            guaranteed_player_dice_count = (
-                player_c - (ai_last_c if player_n == ai_last_n else 1)
-            )
-            guaranteed_player_dice_count = int(guaranteed_player_dice_count / 2)
+            guaranteed_player_dice_count = max(int((player_c - ai_last_c if player_n == ai_last_n else 0) * 2 / 3), 0)
         else: # 玩家先手，或AI先手后玩家不跟面值
-            guaranteed_player_dice_count = int(player_c / 2)
+            guaranteed_player_dice_count = max(int(player_c / 2), 1 if len(player_dices) <= 2 and random.random() >= 0.5 else 0) # 随机防止欺诈
         
         if state["swindlestones"]["ai_memory"][player_n] < guaranteed_player_dice_count:
             state["swindlestones"]["ai_memory"][player_n] = guaranteed_player_dice_count
+            logger.info(f"记忆：玩家所持面值为 {player_n} 骰子的数目至少为{guaranteed_player_dice_count}")
 
+        logger.info("记忆：玩家的骰子组合：" + ", ".join([f"{k}: {v}" for k, v in state["swindlestones"]["ai_memory"].items()]))
+        
         modified_memory = state["swindlestones"]["ai_memory"].copy()
         for i in random.sample(range(1, f+1), f):
             opportunistic_limit = 0
@@ -251,18 +254,18 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
         best_probabilities: dict[int, tuple[int, float]] = {}  # { 面值: (个数, 概率) }
         for _n in range(1, f + 1):  # 遍历所有面值
             all_probabilities: list[tuple[int, float]] = []
-            count_min = ai_dices.count(_n) + modified_memory[_n]
             count_max = (
                 dice_count
                 - len([x for x in ai_dices if x != _n])
                 - sum([v for k, v in modified_memory.items() if k != _n])
             )
+            count_min = min(ai_dices.count(_n) + modified_memory[_n], count_max)
 
             for _c in range(count_min, count_max + 1):  # 遍历可能的所有骰子数目
                 if (
                     _c == player_c
                     and _n == player_n
-                    and dice_probability(_c, count_min, count_max, dice_count, f) < 0.1
+                    and dice_probability(_c, count_min, count_max, dice_count, f) < 0.2
                 ):
                     logger.info("玩家当前猜测的骰子组合可能性过小")
                     return None
@@ -283,7 +286,7 @@ def ai_guess(state: T_State) -> tuple[int, int, Literal[False]] | None:
             return None
 
         best_probability = max(best_probabilities.values(), key=lambda x: x[1])[1]
-        if best_probability < 0.1:
+        if best_probability < 0.2 and random.random() <= 0.5 * best_probability * 5:
             logger.info("所有合法猜测的可能性均过小")
             return None
 
@@ -352,9 +355,9 @@ parser.add_argument(
     "hardmode",
     type=int,
     nargs="?",
-    choices=(0, 1),
+    choices=(0,),
     default=0,
-    help="难度设置，0为一般（默认），1为困难",
+    help="难度设置，0为一般（默认）（困难模式暂未开放）",
 )
 parser.add_argument(
     "dice_notation",
@@ -381,7 +384,7 @@ async def _(
     args: ParserExit = ShellCommandArgs(),
 ):
     if args.status == 0:
-        await matcher.finish(MessageSegment.at(event.user_id) + "\n" + FULL_HELP_TEXT)
+        await matcher.finish(MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + "\n" + FULL_HELP_TEXT)
     else:
         await matcher.finish("参数解析失败")
 
@@ -440,7 +443,7 @@ async def _(
         f = 4
     elif not re.match(r"^\d+[dD]\d+$", args.dice_notation):
         await matcher.finish(
-            MessageSegment.at(event.user_id) + " 请提供正确的骰子配置！"
+            MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + " 请提供正确的骰子配置！"
         )
     else:
         n, f = map(int, args.dice_notation.lower().split("d"))
@@ -512,7 +515,7 @@ async def _(
         state["swindlestones"]["ai_turn"] = True
         matcher.set_arg("cmd", Message())
 
-    await matcher.send(MessageSegment.at(event.user_id) + "\n" + msg)
+    await matcher.send(MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + "\n" + msg)
 
 
 @matcher.got("cmd")
@@ -577,9 +580,9 @@ async def _(
             msg += f"\n🎲您现在手上的骰子为：{get_dice_emoji_list(state['swindlestones']['player_dices'])}"
             msg += f"\n诺辛德手上现在有【{len(state['swindlestones']['ai_dices'])}枚】骰子。"
             if not state["swindlestones"]["ai_turn"]:
-                await matcher.reject(MessageSegment.at(event.user_id) + "\n" + msg)
+                await matcher.reject(MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + "\n" + msg)
             else:
-                await matcher.send(MessageSegment.at(event.user_id) + "\n" + msg)
+                await matcher.send(MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + "\n" + msg)
         else:
             stat = await session.scalar(
                 select(SwindlestonesStatistics).where(
@@ -599,18 +602,18 @@ async def _(
                 )
                 assert account
                 coin_get = max(
-                    int(
+                    round(
                         state["swindlestones"]["bet"] * (MULTIPLIERS[state["swindlestones"]["hardmode"]])
                     ),
                     1,
                 )
-                _reward_exp = f"{state['swindlestones']['bet']}*{MULTIPLIERS[state['swindlestones']['hardmode']]}=" if state['swindlestones']['bet'] else ""
-                msg += f"\n您获得了{_reward_exp}{coin_get}枚{config.coin_notation}"
+                _reward_exp = f"({state['swindlestones']['bet']}*倍率{MULTIPLIERS[state['swindlestones']['hardmode']]})" if state['swindlestones']['bet'] else ""
+                msg += f"\n您获得了{coin_get}枚{config.coin_notation}{_reward_exp}"
                 account.coin += coin_get
                 try:
                     await session.flush([account, stat])
                     await session.commit()
-                    await matcher.finish(MessageSegment.at(event.user_id) + "\n" + msg)
+                    await matcher.finish(MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + "\n" + msg)
                 except MatcherException:
                     raise
                 except Exception as e:
@@ -624,36 +627,36 @@ async def _(
                 try:
                     await session.flush([stat])
                     await session.commit()
-                    await matcher.finish(MessageSegment.at(event.user_id) + "\n" + msg)
+                    await matcher.finish(MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + "\n" + msg)
                 except MatcherException:
                     raise
                 except Exception as e:
                     logger.opt(exception=e).error(type(e).__name__)
                     await matcher.finish("统计数据写入失败")
 
-    cmd = cmd.lower()
+    cmd = cmd.lower().strip().replace("\n", "")
 
     if (
-        not re.match(r"^(\d+x\d+|call|check|help|quit)$", cmd)
+        not re.match(r"^(\d+[x\x20]\d+|call|check|help|quit)$", cmd)
         and not state["swindlestones"]["ai_turn"]
     ):
         await matcher.reject(
-            MessageSegment.at(event.user_id)
+            MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id)
             + " 指令不合法，请重新输入指令！（输入help查看帮助）"
         )
 
     if cmd == "quit":
         await matcher.finish(
-            MessageSegment.at(event.user_id)
+            MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id)
             + " 🏳您已认输"
             + ("。" if state["swindlestones"]["bet"] == 0 else "，并输掉了所有赌注。")
         )
     elif cmd == "help":
-        await matcher.reject(MessageSegment.at(event.user_id) + "\n" + INGAME_HELP_TEXT)
+        await matcher.reject(MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + "\n" + INGAME_HELP_TEXT)
     elif cmd == "call":
         if not state["swindlestones"]["last_guess"]:
             await matcher.reject(
-                MessageSegment.at(event.user_id)
+                MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id)
                 + " 您必须先进行一次猜测，请重新输入指令！（输入help查看帮助）"
             )
         await call(matcher, event, state, session, True)
@@ -670,18 +673,18 @@ async def _(
             is_player: bool
             _c, _n, is_player = state["swindlestones"]["last_guess"]
             msg += f"\n最后一次猜测是场上至少有【{_c}枚】面值为【{_n}】的骰子，由【{'您' if is_player else '诺辛德'}】提出。"
-        await matcher.reject(MessageSegment.at(event.user_id) + msg)
+        await matcher.reject(MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id) + msg)
     elif cmd:
         dice_count = len(
             state["swindlestones"]["player_dices"] + state["swindlestones"]["ai_dices"]
         )
-        c, n = map(int, cmd.split("x"))
+        c, n = map(int, re.split(r"x|\x20", cmd)[:2])
         if (c <= dice_count and n <= state["swindlestones"]["dice_face"]) and (
             not state["swindlestones"]["last_guess"]
             or check_guess_valid((c, n, True), state["swindlestones"]["last_guess"])
         ):
             await matcher.send(
-                MessageSegment.at(event.user_id)
+                MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id)
                 + f"\n🤔您猜场上现在至少有【{c}枚】面值为【{n}】的骰子。"
             )
             state["swindlestones"]["last_guess"] = (c, n, True)
@@ -689,17 +692,17 @@ async def _(
         else:
             if c > dice_count:
                 await matcher.reject(
-                    MessageSegment.at(event.user_id)
+                    MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id)
                     + " 指定的骰子个数大于场上骰子总个数，请重新输入指令！（输入help查看帮助）"
                 )
             elif n > state["swindlestones"]["dice_face"]:
                 await matcher.reject(
-                    MessageSegment.at(event.user_id)
+                    MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id)
                     + " 指定的骰子面值大于骰子面数，请重新输入指令！（输入help查看帮助）"
                 )
             else:
                 await matcher.reject(
-                    MessageSegment.at(event.user_id)
+                    MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id)
                     + " 骰子个数须大于等于上次的猜测，且若骰子个数相等则面值必须大于上次猜测，请重新输入指令！（输入help查看帮助）"
                 )
 
@@ -711,7 +714,7 @@ async def _(
             state["swindlestones"]["last_guess"] = _ai_guess
             state["swindlestones"]["ai_last_guess"] = _ai_guess
             await matcher.reject(
-                MessageSegment.at(event.user_id)
+                MessageSegment.reply(event.message_id) + MessageSegment.at(event.user_id)
                 + f"\n🤔诺辛德猜场上现在至少有【{_ai_guess[0]}枚】面值为【{_ai_guess[1]}】的骰子。现在轮到您了。"
             )
         else:
